@@ -1,0 +1,64 @@
+stages:
+  - check_changes
+  - lint
+  - test
+
+variables:
+  GITLAB_API_URL: "https://gitlab.com/api/v4"
+  ACCESS_TOKEN: $CI_TOKEN
+  BRANCHES_TO_MONITOR: "main,development"
+
+check_for_push:
+  stage: check_changes
+  image: curlimages/curl:latest
+  script:
+    - |
+      for branch in $(echo $BRANCHES_TO_MONITOR | tr "," "\n")
+      do
+        RESPONSE=$(curl --header "PRIVATE-TOKEN: $ACCESS_TOKEN" \
+          "$GITLAB_API_URL/projects/$CLONED_REPO_PROJECT_ID/repository/commits?ref_name=$branch")
+        LATEST_COMMIT=$(echo $RESPONSE | jq -r '.[0].id')
+        echo "Latest commit in $branch: $LATEST_COMMIT"
+        if [ -n "$LATEST_COMMIT" ]; then
+          echo "New commits found in $branch."
+          exit 0  # Sai com sucesso para rodar os testes
+        fi
+      done
+      exit 1  # Sai com erro se não houver novos commits
+
+check_for_merge_requests:
+  stage: check_changes
+  image: curlimages/curl:latest
+  script:
+    - |
+      RESPONSE=$(curl --header "PRIVATE-TOKEN: $ACCESS_TOKEN" \
+        "$GITLAB_API_URL/projects/$CLONED_REPO_PROJECT_ID/merge_requests?state=merged")
+      LATEST_MR=$(echo $RESPONSE | jq -r '.[0].id')
+      echo "Latest merged MR: $LATEST_MR"
+      if [ -n "$LATEST_MR" ]; then
+        echo "New merged MR found."
+        exit 0  # Sai com sucesso para rodar os testes
+      fi
+      exit 1  # Sai com erro se não houver MRs novas
+
+lint_code:
+  stage: lint
+  image: python:3.10
+  script:
+    - git clone https://gitlab.com/lappis-unb/decidimbr/decidim-whatsapp-integration/airflow/hawk-ops.git
+    - cd hawk-ops
+    - pip install -r dags/tests/requirements.txt
+    - pip install black flake8
+    - black --check dags/
+    - flake8 dags/
+  needs: ["check_for_push", "check_for_merge_requests"]
+
+run_tests:
+  stage: test
+  image: python:3.10
+  script:
+    - cd hawk-ops
+    - pip install -r dags/tests/requirements.txt
+    - pytest -v dags/tests
+  needs: ["lint_code"]
+  when: on_success
